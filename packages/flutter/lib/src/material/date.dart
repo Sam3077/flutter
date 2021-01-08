@@ -129,6 +129,19 @@ class DateUtils {
     return (weekdayFromMonday - firstDayOfWeekIndex) % 7;
   }
 
+  /// Returns the [List<DateTime>] of days between the start and end, inclusive, of the provided
+  /// [DateTimeRange].
+  /// 
+  /// Each [DateTime] is set to midnight of the current day.
+  static List<DateTime> dateRangeAsListOfDates(DateTimeRange range) {
+    final List<DateTime> dates = <DateTime>[];
+    for (DateTime curr = DateUtils.dateOnly(range.start); !curr.isAfter(DateUtils.dateOnly(range.end)); 
+    curr = curr.add(const Duration(days: 1))) {
+      dates.add(curr);
+    }
+    return dates;
+  }
+
   /// Returns the number of days in a month, according to the proleptic
   /// Gregorian calendar.
   ///

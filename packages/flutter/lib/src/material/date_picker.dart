@@ -723,7 +723,14 @@ class _DatePickerHeader extends StatelessWidget {
 /// picker in the [DatePickerEntryMode.calendar] (a scrollable calendar month
 /// grid) or [DatePickerEntryMode.input] (two text input fields) mode.
 /// It defaults to [DatePickerEntryMode.calendar] and must be non-null.
-///
+/// 
+/// An optional [selectableDayPredicate] function can be passed in to only allow
+/// certain days for selection. If provided, only the days that
+/// [selectableDayPredicate] returns true for will be selectable and allowed
+/// in the selected [DateTimeRange]. For example, this can be used to only allow 
+/// weekdays for selection. If provided, it must return true for all dates 
+/// in [initialDateRange].
+/// 
 /// The following optional string parameters allow you to override the default
 /// text used for various parts of the dialog:
 ///
@@ -774,6 +781,7 @@ Future<DateTimeRange?> showDateRangePicker({
   required DateTime lastDate,
   DateTime? currentDate,
   DatePickerEntryMode initialEntryMode = DatePickerEntryMode.calendar,
+  SelectableDayPredicate? selectableDayPredicate,
   String? helpText,
   String? cancelText,
   String? confirmText,
@@ -825,6 +833,11 @@ Future<DateTimeRange?> showDateRangePicker({
     initialDateRange == null || !initialDateRange.end.isAfter(lastDate),
     'initialDateRange\'s end date must be on or before lastDate $lastDate.'
   );
+  assert(
+    initialDateRange == null || selectableDayPredicate == null ||
+    DateUtils.dateRangeAsListOfDates(initialDateRange).every(selectableDayPredicate),
+    'Provided initialDate $initialDateRange must satisfy provided selectableDayPredicate'
+  );
   currentDate = DateUtils.dateOnly(currentDate ?? DateTime.now());
   assert(initialEntryMode != null);
   assert(useRootNavigator != null);
@@ -847,6 +860,7 @@ Future<DateTimeRange?> showDateRangePicker({
     fieldEndHintText: fieldEndHintText,
     fieldStartLabelText: fieldStartLabelText,
     fieldEndLabelText: fieldEndLabelText,
+    selectableDayPredicate: selectableDayPredicate,
   );
 
   if (textDirection != null) {
@@ -922,6 +936,7 @@ class _DateRangePickerDialog extends StatefulWidget {
     this.fieldEndHintText,
     this.fieldStartLabelText,
     this.fieldEndLabelText,
+    this.selectableDayPredicate,
   }) : super(key: key);
 
   final DateTimeRange? initialDateRange;
@@ -940,6 +955,7 @@ class _DateRangePickerDialog extends StatefulWidget {
   final String? fieldEndHintText;
   final String? fieldStartLabelText;
   final String? fieldEndLabelText;
+  final SelectableDayPredicate? selectableDayPredicate;
 
   @override
   _DateRangePickerDialogState createState() => _DateRangePickerDialogState();
@@ -949,7 +965,9 @@ class _DateRangePickerDialogState extends State<_DateRangePickerDialog> {
   late DatePickerEntryMode _entryMode;
   DateTime? _selectedStart;
   DateTime? _selectedEnd;
+  String? _calendarSelectionErrorText;
   late bool _autoValidate;
+  late bool _autoValidateCalendar;
   final GlobalKey _calendarPickerKey = GlobalKey();
   final GlobalKey<_InputDateRangePickerState> _inputPickerKey = GlobalKey<_InputDateRangePickerState>();
 
@@ -960,6 +978,7 @@ class _DateRangePickerDialogState extends State<_DateRangePickerDialog> {
     _selectedEnd = widget.initialDateRange?.end;
     _entryMode = widget.initialEntryMode;
     _autoValidate = false;
+    _autoValidateCalendar = false;
   }
 
   void _handleOk() {
@@ -971,12 +990,42 @@ class _DateRangePickerDialogState extends State<_DateRangePickerDialog> {
         });
         return;
       }
+    } else if (!_validateCalendarSelection()) {
+      _autoValidateCalendar = true;
+      return;
     }
     final DateTimeRange? selectedRange = _hasSelectedDateRange
         ? DateTimeRange(start: _selectedStart!, end: _selectedEnd!)
         : null;
 
     Navigator.pop(context, selectedRange);
+  }
+
+  // check the value of the current selection on the calendar and
+  // display an appropriate error message if it's invalid.
+  bool _validateCalendarSelection() {
+    bool isValid;
+    // if no selectableDayPredicate is provided, all input is valid
+    if (widget.selectableDayPredicate == null) {
+      isValid = true;
+    }
+    // an incomplete input should count as valid
+    else if (_selectedStart == null || _selectedEnd == null) {
+      isValid = true;
+    } else {
+      isValid = DateUtils.dateRangeAsListOfDates(DateTimeRange(start: _selectedStart!, end: _selectedEnd!)).every(widget.selectableDayPredicate!);
+    }
+    if (isValid) {
+      setState(() {
+        _calendarSelectionErrorText = null;
+      });
+    } else {
+      setState(() {
+        _calendarSelectionErrorText = widget.errorInvalidRangeText ??
+            MaterialLocalizations.of(context).invalidDateRangeLabel;
+      });
+    }
+    return isValid;
   }
 
   void _handleCancel() {
@@ -988,6 +1037,14 @@ class _DateRangePickerDialogState extends State<_DateRangePickerDialog> {
       switch (_entryMode) {
         case DatePickerEntryMode.calendar:
           _autoValidate = false;
+          // If range includes unselectable days, ignore range
+          if (_selectedStart != null && _selectedEnd != null && widget.selectableDayPredicate != null) {
+            final bool isValid = DateUtils.dateRangeAsListOfDates(DateTimeRange(start: _selectedStart!, end: _selectedEnd!)).every(widget.selectableDayPredicate!);
+            if (!isValid) {
+              _selectedStart = null;
+              _selectedEnd = null;
+            }
+          }
           _entryMode = DatePickerEntryMode.input;
           break;
 
@@ -1015,10 +1072,18 @@ class _DateRangePickerDialogState extends State<_DateRangePickerDialog> {
 
   void _handleStartDateChanged(DateTime? date) {
     setState(() => _selectedStart = date);
+    if (_entryMode == DatePickerEntryMode.calendar && _autoValidateCalendar) {
+      // if the entry is valid, turn off autovalidation
+      _autoValidateCalendar = !_validateCalendarSelection();
+    }
   }
 
   void _handleEndDateChanged(DateTime? date) {
     setState(() => _selectedEnd = date);
+    if (_entryMode == DatePickerEntryMode.calendar && _autoValidateCalendar) {
+      // if the entry is valid, turn off autovalidation
+      _autoValidateCalendar = !_validateCalendarSelection();
+    }
   }
 
   bool get _hasSelectedDateRange => _selectedStart != null && _selectedEnd != null;
@@ -1051,7 +1116,8 @@ class _DateRangePickerDialogState extends State<_DateRangePickerDialog> {
           onToggleEntryMode: _handleEntryModeToggle,
           confirmText: widget.saveText ?? localizations.saveButtonLabel,
           helpText: widget.helpText ?? localizations.dateRangePickerHelpText,
-        );
+          selectionErrorText: _calendarSelectionErrorText,
+          selectableDayPredicate: widget.selectableDayPredicate);
         size = mediaQuery.size;
         insetPadding = const EdgeInsets.all(0.0);
         shape = const RoundedRectangleBorder(
@@ -1091,6 +1157,7 @@ class _DateRangePickerDialogState extends State<_DateRangePickerDialog> {
                   fieldEndHintText: widget.fieldEndHintText,
                   fieldStartLabelText: widget.fieldStartLabelText,
                   fieldEndLabelText: widget.fieldEndLabelText,
+                  selectableDayPredicate: widget.selectableDayPredicate
                 ),
                 const Spacer(),
               ],
@@ -1149,6 +1216,8 @@ class _CalendarRangePickerDialog extends StatelessWidget {
     required this.onToggleEntryMode,
     required this.confirmText,
     required this.helpText,
+    this.selectionErrorText,
+    this.selectableDayPredicate,
   }) : super(key: key);
 
   final DateTime? selectedStartDate;
@@ -1163,6 +1232,8 @@ class _CalendarRangePickerDialog extends StatelessWidget {
   final VoidCallback? onToggleEntryMode;
   final String confirmText;
   final String helpText;
+  final String? selectionErrorText;
+  final SelectableDayPredicate? selectableDayPredicate;
 
   @override
   Widget build(BuildContext context) {
@@ -1195,6 +1266,19 @@ class _CalendarRangePickerDialog extends StatelessWidget {
       tooltip: localizations.inputDateModeButtonLabel,
       onPressed: onToggleEntryMode,
     );
+
+    List<Widget> errorWidgets;
+    if (selectionErrorText == null) {
+      errorWidgets = <Widget>[Container(height: 0)];
+    } else {
+      errorWidgets = <Widget>[
+        const SizedBox(height: 8.0),
+        Text(
+          selectionErrorText!,
+          style: textTheme.bodyText2!.apply(color: colorScheme.error)
+        )
+      ];
+    }
 
     return SafeArea(
       top: false,
@@ -1250,6 +1334,7 @@ class _CalendarRangePickerDialog extends StatelessWidget {
                           ),
                         ],
                       ),
+                      ...errorWidgets,
                       const SizedBox(height: 16),
                     ],
                   ),
@@ -1272,7 +1357,7 @@ class _CalendarRangePickerDialog extends StatelessWidget {
           currentDate: currentDate,
           onStartDateChanged: onStartDateChanged,
           onEndDateChanged: onEndDateChanged,
-        ),
+          selectableDayPredicate: selectableDayPredicate),
       ),
     );
   }
@@ -1301,6 +1386,7 @@ class _CalendarDateRangePicker extends StatefulWidget {
     DateTime? currentDate,
     required this.onStartDateChanged,
     required this.onEndDateChanged,
+    this.selectableDayPredicate,
   }) : initialStartDate = initialStartDate != null ? DateUtils.dateOnly(initialStartDate) : null,
        initialEndDate = initialEndDate != null ? DateUtils.dateOnly(initialEndDate) : null,
        assert(firstDate != null),
@@ -1339,6 +1425,9 @@ class _CalendarDateRangePicker extends StatefulWidget {
 
   /// Called when the user changes the end date of the selected range.
   final ValueChanged<DateTime?>? onEndDateChanged;
+
+  /// Function to provide full control over which [DateTime] can be selected.
+  final SelectableDayPredicate? selectableDayPredicate;
 
   @override
   _CalendarDateRangePickerState createState() => _CalendarDateRangePickerState();
@@ -1420,11 +1509,11 @@ class _CalendarDateRangePickerState extends State<_CalendarDateRangePicker> {
         widget.onEndDateChanged?.call(_endDate);
       } else {
         _startDate = date;
-        widget.onStartDateChanged?.call(_startDate!);
         if (_endDate != null) {
           _endDate = null;
           widget.onEndDateChanged?.call(_endDate);
         }
+        widget.onStartDateChanged?.call(_startDate!);
       }
     });
   }
@@ -1442,6 +1531,7 @@ class _CalendarDateRangePickerState extends State<_CalendarDateRangePicker> {
       lastDate: widget.lastDate,
       displayedMonth: month,
       onChanged: _updateSelection,
+      selectableDayPredicate: widget.selectableDayPredicate,
     );
   }
 
@@ -1839,6 +1929,7 @@ class _MonthItem extends StatefulWidget {
     required this.lastDate,
     required this.displayedMonth,
     this.dragStartBehavior = DragStartBehavior.start,
+    this.selectableDayPredicate
   }) : assert(firstDate != null),
        assert(lastDate != null),
        assert(!firstDate.isAfter(lastDate)),
@@ -1877,6 +1968,9 @@ class _MonthItem extends StatefulWidget {
 
   /// The month whose days are displayed by this picker.
   final DateTime displayedMonth;
+
+  /// Function to provide full control over which [DateTime] can be selected.
+  final SelectableDayPredicate? selectableDayPredicate;
 
   /// Determines the way that drag start behavior is handled.
   ///
@@ -1967,9 +2061,11 @@ class _MonthItemState extends State<_MonthItem> {
     final MaterialLocalizations localizations = MaterialLocalizations.of(context);
     final TextDirection textDirection = Directionality.of(context);
     final Color highlightColor = _highlightColor(context);
+    final Color errorColor = colorScheme.error;
     final int day = dayToBuild.day;
 
-    final bool isDisabled = dayToBuild.isAfter(widget.lastDate) || dayToBuild.isBefore(widget.firstDate);
+    final bool isDisabled = dayToBuild.isAfter(widget.lastDate) || dayToBuild.isBefore(widget.firstDate) ||
+        !(widget.selectableDayPredicate?.call(dayToBuild) ?? true);
 
     BoxDecoration? decoration;
     TextStyle? itemStyle = textTheme.bodyText2;
@@ -1980,6 +2076,7 @@ class _MonthItemState extends State<_MonthItem> {
     final bool isInRange = isRangeSelected &&
       dayToBuild.isAfter(widget.selectedDateStart!) &&
       dayToBuild.isBefore(widget.selectedDateEnd!);
+    final bool isIllegallySelected = isInRange && (!(widget.selectableDayPredicate?.call(dayToBuild) ?? true));
 
     _HighlightPainter? highlightPainter;
 
@@ -2009,6 +2106,10 @@ class _MonthItemState extends State<_MonthItem> {
         style: _HighlightPainterStyle.highlightAll,
         textDirection: textDirection,
       );
+      if (isIllegallySelected) {
+        // non-selectable days get an error color.
+        itemStyle = textTheme.bodyText2?.apply(color: errorColor);
+      }
     } else if (isDisabled) {
       itemStyle = textTheme.bodyText2?.apply(color: colorScheme.onSurface.withOpacity(0.38));
     } else if (DateUtils.isSameDay(widget.currentDate, dayToBuild)) {
@@ -2404,6 +2505,7 @@ class _InputDateRangePicker extends StatefulWidget {
     this.fieldEndLabelText,
     this.autofocus = false,
     this.autovalidate = false,
+    this.selectableDayPredicate,
   }) : initialStartDate = initialStartDate == null ? null : DateUtils.dateOnly(initialStartDate),
        initialEndDate = initialEndDate == null ? null : DateUtils.dateOnly(initialEndDate),
        assert(firstDate != null),
@@ -2470,6 +2572,9 @@ class _InputDateRangePicker extends StatefulWidget {
   /// [_InputDateRangePickerState.validate] to validate.
   final bool autovalidate;
 
+  /// Function to provide full control over which [DateTime] can be selected.
+  final SelectableDayPredicate? selectableDayPredicate;
+
   @override
   _InputDateRangePickerState createState() => _InputDateRangePickerState();
 }
@@ -2530,7 +2635,11 @@ class _InputDateRangePickerState extends State<_InputDateRangePicker> {
     String? startError = _validateDate(_startDate);
     final String? endError = _validateDate(_endDate);
     if (startError == null && endError == null) {
-      if (_startDate!.isAfter(_endDate!)) {
+      bool valid = true;
+      if (widget.selectableDayPredicate != null && _startDate != null && _endDate != null) {
+        valid = DateUtils.dateRangeAsListOfDates(DateTimeRange(start: _startDate!, end: _endDate!)).every(widget.selectableDayPredicate!);
+      }
+      if (_startDate!.isAfter(_endDate!) || !valid) {
         startError = widget.errorInvalidRangeText ?? MaterialLocalizations.of(context).invalidDateRangeLabel;
       }
     }
